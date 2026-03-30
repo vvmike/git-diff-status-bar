@@ -11,7 +11,7 @@ Built for Cursor but may be useful for other IDEs.
 - Panel bar includes rapid terminal templates for common git commands.
 - Light-weight.
 
-![Git Diff Status Bar Screenshot](images/screenshot.png)
+![Git Diff Status Bar Screenshot](assets/screenshot.png)
 
 ## License
 
