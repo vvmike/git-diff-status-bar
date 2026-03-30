@@ -20,7 +20,8 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "release": "npm run compile && npm version patch && git push --follow-tags"
   },
   "devDependencies": {
     "@types/node": "^18.15.11",
