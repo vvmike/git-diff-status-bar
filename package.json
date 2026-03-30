@@ -3,7 +3,7 @@
   "displayName": "Git Diff Status Bar 🟩🟥",
   "description": "Status bar shows coloured count of lines added or removed since last commit. Also includes warnings and terminal command shortcuts. Made for Cursor.",
   "version": "0.0.2",
-  "publisher": "mike",
+  "publisher": "vvmike",
   "engines": {
     "vscode": "^1.80.0"
   },
