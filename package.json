@@ -1,0 +1,25 @@
+{
+  "name": "git-diff-status-bar",
+  "displayName": "Git Diff Status Bar 🟩🟥",
+  "description": "Status bar shows coloured count of lines added or removed since last commit. Also includes warnings and terminal command shortcuts. Made for Cursor.",
+  "version": "0.0.2",
+  "publisher": "mike",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "*"
+  ],
+  "contributes": {},
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.15.11",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.4"
+  }
+}
