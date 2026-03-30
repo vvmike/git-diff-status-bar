@@ -4,12 +4,9 @@ on:
   push:
     branches:
       - main
-  release:
-    types: [published]
 
 jobs:
   bump-version:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -35,17 +32,22 @@ jobs:
           git push
 
   publish:
-    if: github.event_name == 'release'
+    needs: bump-version
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: main
 
       - uses: actions/setup-node@v5
         with:
           node-version: 24
 
       - run: npm install
+
+      - name: Compile
+        run: npm run compile
 
       - run: npm install -g @vscode/vsce ovsx
 
