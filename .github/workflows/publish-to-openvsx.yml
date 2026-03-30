@@ -23,5 +23,5 @@ jobs:
       - name: Package extension
         run: vsce package --out extension.vsix
 
-- name: Publish to Open VSX
+      - name: Publish to Open VSX
         run: ovsx publish extension.vsix --pat ${{ secrets.OPEN_VSX_TOKEN }}
