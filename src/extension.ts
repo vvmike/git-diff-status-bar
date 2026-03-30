@@ -11,6 +11,8 @@ let lightWarningThreshold = 200;
 let sternWarningThreshold = 500;
 let lastNotifiedLight = false;
 let lastNotifiedStern = false;
+let lastNotificationTime = 0;
+let reminderInterval = 5; // minutes
 let prevTotalLines = -1;
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -96,25 +98,30 @@ async function updateStatusBar(rootPath: string) {
         statusBarItem.text = `🟩 +${added}   🟥 -${removed}`;
 
         const totalLines = added + removed;
+        const currentTime = Date.now();
+        const intervalMs = reminderInterval * 60 * 1000;
         
-        if (totalLines !== prevTotalLines) {
-            if (totalLines > sternWarningThreshold) {
-                if (!lastNotifiedStern || totalLines > prevTotalLines + 50) { 
-                    vscode.window.showWarningMessage(`Git Diff: ${totalLines} lines changed! Time to commit!`, 'Got it');
-                    lastNotifiedStern = true;
-                }
-            } else if (totalLines > lightWarningThreshold) {
-                if (!lastNotifiedLight || totalLines > prevTotalLines + 50) {
-                    vscode.window.showInformationMessage(`Git Diff: ${totalLines} lines changed. Getting large!`, 'Got it');
-                    lastNotifiedLight = true;
-                    lastNotifiedStern = false;
-                }
-            } else {
+        if (totalLines > sternWarningThreshold) {
+            const timeSinceLast = currentTime - lastNotificationTime;
+            if (!lastNotifiedStern || timeSinceLast > intervalMs || totalLines > prevTotalLines + 50) { 
+                vscode.window.showWarningMessage(`Git Diff: ${totalLines} lines changed! Time to commit!`, 'Got it');
+                lastNotifiedStern = true;
                 lastNotifiedLight = false;
-                lastNotifiedStern = false;
+                lastNotificationTime = currentTime;
             }
-            prevTotalLines = totalLines;
+        } else if (totalLines > lightWarningThreshold) {
+            const timeSinceLast = currentTime - lastNotificationTime;
+            if (!lastNotifiedLight || timeSinceLast > intervalMs || totalLines > prevTotalLines + 50) {
+                vscode.window.showInformationMessage(`Git Diff: ${totalLines} lines changed. Getting large!`, 'Got it');
+                lastNotifiedLight = true;
+                lastNotifiedStern = false;
+                lastNotificationTime = currentTime;
+            }
+        } else {
+            lastNotifiedLight = false;
+            lastNotifiedStern = false;
         }
+        prevTotalLines = totalLines;
 
     } catch (e) {
         statusBarItem.text = `$(git-commit) git error`;
@@ -150,6 +157,9 @@ function showPopup(context: vscode.ExtensionContext) {
                     }
                     if (message.stern !== undefined && !isNaN(parseInt(message.stern, 10))) {
                         sternWarningThreshold = parseInt(message.stern, 10);
+                    }
+                    if (message.interval !== undefined && !isNaN(parseInt(message.interval, 10))) {
+                        reminderInterval = parseInt(message.interval, 10);
                     }
                     if (message.notes !== undefined) {
                         await context.workspaceState.update('gitDiffNotes', message.notes);
@@ -222,6 +232,10 @@ function getWebviewContent(savedNotes: string) {
         <div class="flex-row">
             <label>Stern Warning (total lines)</label>
             <input type="number" style="font-size: 0.8em; color: var(--vscode-descriptionForeground);" id="sternInput" value="${sternWarningThreshold}" oninput="checkDirty()" class="number-input" />
+        </div>
+        <div class="flex-row">
+            <label>Reminder Interval (minutes)</label>
+            <input type="number" style="font-size: 0.8em; color: var(--vscode-descriptionForeground);" id="intervalInput" value="${reminderInterval}" oninput="checkDirty()" class="number-input" />
         </div>
     </div>
 
@@ -296,8 +310,9 @@ function getWebviewContent(savedNotes: string) {
             saveTimeout = setTimeout(() => {
                 const light = document.getElementById('lightInput').value;
                 const stern = document.getElementById('sternInput').value;
+                const interval = document.getElementById('intervalInput').value;
                 const notes = document.getElementById('notesInput').value;
-                vscode.postMessage({ command: 'autoSave', light, stern, notes });
+                vscode.postMessage({ command: 'autoSave', light, stern, interval, notes });
                 statusEl.innerText = 'Saved';
                 setTimeout(() => { if (statusEl.innerText === 'Saved') statusEl.innerText = ''; }, 2000);
             }, 600);

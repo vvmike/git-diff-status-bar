@@ -7,8 +7,11 @@ Built for Cursor but may be useful for other IDEs.
 
 - Status bar shows coloured indicators ( 🟩🟥 ) of lines added and removed since last commit.
 - Clicking opens an interactive settings panel where users can set thresholds for warnings and add custom notes.
+- Automated warnings when user passes threshold.
 - Panel bar includes rapid terminal templates for common git commands.
 - Light-weight.
+
+![Git Diff Status Bar Screenshot](images/screenshot.png)
 
 ## License
 
