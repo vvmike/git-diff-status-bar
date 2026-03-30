@@ -9,8 +9,13 @@
   },
   "main": "./out/extension.js",
   "activationEvents": [
-    "*"
+    "onStartupFinished"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vvmike/git-diff-status-bar.git"
+  },
+  "license": "MIT",
   "contributes": {},
   "scripts": {
     "vscode:prepublish": "npm run compile",
