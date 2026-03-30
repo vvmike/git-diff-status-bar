@@ -1,0 +1,27 @@
+name: Publish to Open VSX
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - run: npm install
+
+      - run: npm install -g @vscode/vsce ovsx
+
+      - name: Package extension
+        run: vsce package --out extension.vsix
+
+      - name: Publish to Open VSX
+        run: ovsx publish extension.vsix --token ${{ secrets.OPEN_VSX_TOKEN }}
