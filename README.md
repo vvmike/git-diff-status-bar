@@ -1,3 +1,5 @@
+[![Open VSX Version](https://img.shields.io/open-vsx/v/vvmike/git-diff-status-bar)](https://open-vsx.org/extension/vvmike/git-diff-status-bar)
+
 # Git Diff Status Bar 🟩🟥
 
 Super light-weight extension that shows coloured indicators of lines added or removed since last commit. Also warns users if they have made signifciant changes since their last commit.
