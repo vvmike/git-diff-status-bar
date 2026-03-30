@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  release:
+    types: [published]
+
+jobs:
+  bump-version:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 24
+
+      - run: npm install
+
+      - name: Bump patch version
+        run: |
+          npm version patch --no-git-tag-version
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add package.json package-lock.json
+          git commit -m "Auto bump version" || echo "No changes"
+          git push
+
+  publish:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 24
+
+      - run: npm install
+
+      - run: npm install -g @vscode/vsce ovsx
+
+      - name: Package extension
+        run: vsce package --out extension.vsix
+
+      - name: Publish to Open VSX
+        run: ovsx publish extension.vsix --token ${{ secrets.OPEN_VSX_TOKEN }}
