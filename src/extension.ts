@@ -1,8 +1,14 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
+
+/** After any webview button action, suppress auto threshold popups briefly. */
+const POPUP_SUPPRESS_MS = 8_000;
+const LARGE_FILE_LINE_COUNT_BYTES = 2 * 1024 * 1024;
 
 let statusBarItem: vscode.StatusBarItem;
 let popupPanel: vscode.WebviewPanel | undefined;
@@ -14,6 +20,15 @@ let lastNotifiedStern = false;
 let lastNotificationTime = 0;
 let reminderInterval = 5; // minutes
 let prevTotalLines = -1;
+let lastWebviewInteractionTime = 0;
+
+function touchWebviewInteraction() {
+    lastWebviewInteractionTime = Date.now();
+}
+
+function shouldSuppressNotifications() {
+    return Date.now() - lastWebviewInteractionTime < POPUP_SUPPRESS_MS;
+}
 
 export async function activate(context: vscode.ExtensionContext) {
     const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -21,7 +36,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Command to open the popup
     const openPopupCommandId = 'gitDiffStatus.openPopup';
     context.subscriptions.push(vscode.commands.registerCommand(openPopupCommandId, () => {
-        showPopup(context);
+        showPopup(context, rootPath ?? '');
     }));
 
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
@@ -75,51 +90,132 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(watcher);
 }
 
+function sumNumstat(stdout: string) {
+    let added = 0;
+    let removed = 0;
+    for (const line of stdout.split('\n')) {
+        if (!line.trim()) continue;
+        const parts = line.split('\t');
+        if (parts.length >= 2) {
+            const a = parseInt(parts[0], 10);
+            const r = parseInt(parts[1], 10);
+            if (!isNaN(a) && !isNaN(r)) {
+                added += a;
+                removed += r;
+            }
+        }
+    }
+    return { added, removed };
+}
+
+/** Line count for untracked text files (git diff HEAD omits these). */
+async function countUntrackedLines(rootPath: string): Promise<number> {
+    const { stdout } = await execFileAsync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
+        cwd: rootPath,
+        maxBuffer: 10_000_000,
+    });
+    const relativePaths = stdout.split('\0').filter(Boolean);
+    let total = 0;
+    for (const rel of relativePaths) {
+        const abs = path.join(rootPath, rel);
+        try {
+            const st = await fs.promises.stat(abs);
+            if (!st.isFile()) continue;
+            if (st.size > LARGE_FILE_LINE_COUNT_BYTES) {
+                total += await countLinesInFileStream(abs);
+                continue;
+            }
+            const buf = await fs.promises.readFile(abs);
+            if (buf.includes(0)) continue;
+            let n = 0;
+            for (let i = 0; i < buf.length; i++) {
+                if (buf[i] === 10) n++;
+            }
+            if (buf.length > 0 && buf[buf.length - 1] !== 10) n++;
+            total += n;
+        } catch {
+            // ignore missing or unreadable paths
+        }
+    }
+    return total;
+}
+
+/** Streamed line count (avoids loading multi‑MB files); skips binary files. */
+function countLinesInFileStream(filePath: string): Promise<number> {
+    return new Promise(resolve => {
+        let lines = 0;
+        let lastByte: number | undefined;
+        let binary = false;
+        const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
+        stream.on('data', (chunk: Buffer) => {
+            if (binary) return;
+            if (chunk.includes(0)) {
+                binary = true;
+                lines = 0;
+                return;
+            }
+            for (let i = 0; i < chunk.length; i++) {
+                if (chunk[i] === 10) lines++;
+                lastByte = chunk[i];
+            }
+        });
+        stream.on('end', () => {
+            if (binary) {
+                resolve(0);
+                return;
+            }
+            void fs.promises
+                .stat(filePath)
+                .then(st => {
+                    if (st.size === 0) resolve(0);
+                    else if (lastByte !== 10) resolve(lines + 1);
+                    else resolve(lines);
+                })
+                .catch(() => resolve(0));
+        });
+        stream.on('error', () => resolve(0));
+    });
+}
+
+async function toggleBottomPanel() {
+    await vscode.commands.executeCommand('workbench.action.togglePanel');
+}
+
 async function updateStatusBar(rootPath: string) {
     try {
         const { stdout } = await execFileAsync('git', ['diff', 'HEAD', '--numstat'], { cwd: rootPath, maxBuffer: 1_000_000 });
-        let added = 0;
-        let removed = 0;
-
-        const lines = stdout.split('\n');
-        for (const line of lines) {
-            if (!line.trim()) continue;
-            const parts = line.split('\t');
-            if (parts.length >= 2) {
-                const a = parseInt(parts[0], 10);
-                const r = parseInt(parts[1], 10);
-                if (!isNaN(a) && !isNaN(r)) {
-                    added += a;
-                    removed += r;
-                }
-            }
-        }
+        const { added: diffAdded, removed } = sumNumstat(stdout);
+        const untrackedAdded = await countUntrackedLines(rootPath);
+        const added = diffAdded + untrackedAdded;
 
         statusBarItem.text = `🟩 +${added}   🟥 -${removed}`;
 
         const totalLines = added + removed;
         const currentTime = Date.now();
         const intervalMs = reminderInterval * 60 * 1000;
-        
-        if (totalLines > sternWarningThreshold) {
-            const timeSinceLast = currentTime - lastNotificationTime;
-            if (!lastNotifiedStern || timeSinceLast > intervalMs || totalLines > prevTotalLines + 50) { 
-                vscode.window.showWarningMessage(`Git Diff: ${totalLines} lines changed! Time to commit!`, 'Got it');
-                lastNotifiedStern = true;
+        const suppressed = shouldSuppressNotifications();
+
+        if (!suppressed) {
+            if (totalLines > sternWarningThreshold) {
+                const timeSinceLast = currentTime - lastNotificationTime;
+                if (!lastNotifiedStern || timeSinceLast > intervalMs || totalLines > prevTotalLines + 50) {
+                    vscode.window.showWarningMessage(`Git Diff: ${totalLines} lines changed! Time to commit!`, 'Got it');
+                    lastNotifiedStern = true;
+                    lastNotifiedLight = false;
+                    lastNotificationTime = currentTime;
+                }
+            } else if (totalLines > lightWarningThreshold) {
+                const timeSinceLast = currentTime - lastNotificationTime;
+                if (!lastNotifiedLight || timeSinceLast > intervalMs || totalLines > prevTotalLines + 50) {
+                    vscode.window.showInformationMessage(`Git Diff: ${totalLines} lines changed. Getting large!`, 'Got it');
+                    lastNotifiedLight = true;
+                    lastNotifiedStern = false;
+                    lastNotificationTime = currentTime;
+                }
+            } else {
                 lastNotifiedLight = false;
-                lastNotificationTime = currentTime;
-            }
-        } else if (totalLines > lightWarningThreshold) {
-            const timeSinceLast = currentTime - lastNotificationTime;
-            if (!lastNotifiedLight || timeSinceLast > intervalMs || totalLines > prevTotalLines + 50) {
-                vscode.window.showInformationMessage(`Git Diff: ${totalLines} lines changed. Getting large!`, 'Got it');
-                lastNotifiedLight = true;
                 lastNotifiedStern = false;
-                lastNotificationTime = currentTime;
             }
-        } else {
-            lastNotifiedLight = false;
-            lastNotifiedStern = false;
         }
         prevTotalLines = totalLines;
 
@@ -128,11 +224,9 @@ async function updateStatusBar(rootPath: string) {
     }
 }
 
-let unsavedState: any = null;
-
-function showPopup(context: vscode.ExtensionContext) {
+function showPopup(context: vscode.ExtensionContext, rootPath: string) {
     if (popupPanel) {
-        popupPanel.reveal(vscode.ViewColumn.Beside);
+        popupPanel.reveal(undefined, false);
         return;
     }
 
@@ -166,21 +260,54 @@ function showPopup(context: vscode.ExtensionContext) {
                     }
                     return;
                 case 'toggleTerminal':
-                    vscode.commands.executeCommand('workbench.action.terminal.toggleTerminal');
+                    touchWebviewInteraction();
+                    await toggleBottomPanel();
                     return;
                 case 'sendSnippet':
-                    // Get the active terminal or create one if none exists
-                    const terminal = vscode.window.activeTerminal || vscode.window.createTerminal();
-                    terminal.show(true); // show but don't take strict focus
-                    terminal.sendText(message.text, message.run);
-                    vscode.commands.executeCommand('workbench.action.terminal.focus');
+                    touchWebviewInteraction();
+                    {
+                        const terminal = vscode.window.activeTerminal || vscode.window.createTerminal();
+                        terminal.show(true);
+                        terminal.sendText(message.text, message.run);
+                        void vscode.commands.executeCommand('workbench.action.terminal.focus');
+                    }
                     return;
                 case 'sendToAgent':
+                    touchWebviewInteraction();
                     vscode.env.clipboard.writeText(message.text);
                     vscode.commands.executeCommand('workbench.action.chat.open', { query: message.text }).then(undefined, () => {
                         vscode.commands.executeCommand('aipane.action.newChat');
                     });
-                    vscode.window.showInformationMessage('Opened Agent with prompt copied. You may need to manually select "@Commit" from the dropdown to create an active context link.');
+                    vscode.window.showInformationMessage(
+                        'Opened Agent with prompt copied. You may need to manually select "@Commit" from the dropdown to create an active context link.'
+                    );
+                    return;
+                case 'nuclearReset':
+                    touchWebviewInteraction();
+                    if (!rootPath) {
+                        vscode.window.showErrorMessage('No workspace folder.');
+                        return;
+                    }
+                    {
+                        const choice = await vscode.window.showWarningMessage(
+                            'Discard all uncommitted changes to tracked files and delete ALL untracked files and folders? Commands: git reset --hard HEAD && git clean -fd. This cannot be undone.',
+                            { modal: true },
+                            'Cancel',
+                            'Yes, wipe everything'
+                        );
+                        if (choice !== 'Yes, wipe everything') {
+                            return;
+                        }
+                        try {
+                            await execFileAsync('git', ['reset', '--hard', 'HEAD'], { cwd: rootPath, maxBuffer: 2_000_000 });
+                            await execFileAsync('git', ['clean', '-fd'], { cwd: rootPath, maxBuffer: 2_000_000 });
+                            vscode.window.showInformationMessage('Ran git reset --hard HEAD and git clean -fd.');
+                            await updateStatusBar(rootPath);
+                        } catch (e) {
+                            const detail = e instanceof Error ? e.message : String(e);
+                            vscode.window.showErrorMessage(`git reset/clean failed: ${detail}`);
+                        }
+                    }
                     return;
             }
         },
@@ -220,11 +347,16 @@ function getWebviewContent(savedNotes: string) {
         .command-input { flex: 1; margin-bottom: 0 !important; font-size: 0.9em; }
         .action-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 10px; cursor: pointer; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 1.25em; }
         .action-btn:hover { background: var(--vscode-button-hoverBackground); }
+        .nuclear-wrap { display: none; margin-top: 14px; padding: 10px; border: 1px solid var(--vscode-inputValidation-errorBorder); border-radius: 4px; background: var(--vscode-inputValidation-errorBackground); }
+        .nuclear-warn { font-size: 0.85em; margin: 0 0 8px 0; color: var(--vscode-errorForeground); }
+        .nuclear-btn { background: var(--vscode-inputValidation-errorBackground) !important; color: var(--vscode-errorForeground) !important; border: 1px solid var(--vscode-inputValidation-errorBorder) !important; }
+        .nuclear-btn:hover { filter: brightness(1.08); }
+        #thresholdHeading { cursor: default; user-select: none; }
     </style>
 </head>
 <body>
     <div class="group">
-        <h3>Threshold Settings</h3>
+        <h3 id="thresholdHeading" title="Triple-click this heading to reveal destructive options">Threshold Settings</h3>
         <div class="flex-row">
             <label>Light Warning (total lines)</label>
             <input type="number" style="font-size: 0.8em; color: var(--vscode-descriptionForeground);" id="lightInput" value="${lightWarningThreshold}" oninput="checkDirty()" class="number-input" />
@@ -237,6 +369,10 @@ function getWebviewContent(savedNotes: string) {
             <label>Reminder Interval (minutes)</label>
             <input type="number" style="font-size: 0.8em; color: var(--vscode-descriptionForeground);" id="intervalInput" value="${reminderInterval}" oninput="checkDirty()" class="number-input" />
         </div>
+        <div id="nuclearSection" class="nuclear-wrap">
+            <p class="nuclear-warn">Revert tracked files to HEAD and delete untracked paths. Equivalent to <code>git reset --hard HEAD &amp;&amp; git clean -fd</code>.</p>
+            <button type="button" class="nuclear-btn" onclick="requestNuclear()">Wipe all local changes and new files</button>
+        </div>
     </div>
 
     <div class="group">
@@ -247,7 +383,7 @@ function getWebviewContent(savedNotes: string) {
 
     <div class="group">
         <h3>Terminal</h3>
-        <button onclick="toggleTerminal()">Toggle Cursor Terminal</button>
+        <button type="button" onclick="toggleTerminal()">Toggle bottom panel</button>
     </div>
 
     <div class="group snippet-section">
@@ -296,8 +432,6 @@ function getWebviewContent(savedNotes: string) {
         </div>
     </div>
 
-    </div>
-
     <script>
         const vscode = acquireVsCodeApi();
 
@@ -331,11 +465,34 @@ function getWebviewContent(savedNotes: string) {
             }
         }
 
-        // Initialize textarea height
-        window.addEventListener('load', () => resizeTextarea(document.getElementById('notesInput')));
+        function setupNuclearReveal() {
+            const heading = document.getElementById('thresholdHeading');
+            const nuclear = document.getElementById('nuclearSection');
+            let clicks = 0;
+            let clickTimer;
+            heading.addEventListener('click', () => {
+                clicks++;
+                clearTimeout(clickTimer);
+                clickTimer = setTimeout(() => { clicks = 0; }, 500);
+                if (clicks >= 3) {
+                    clicks = 0;
+                    const show = nuclear.style.display !== 'block';
+                    nuclear.style.display = show ? 'block' : 'none';
+                }
+            });
+        }
+
+        window.addEventListener('load', () => {
+            resizeTextarea(document.getElementById('notesInput'));
+            setupNuclearReveal();
+        });
 
         function toggleTerminal() {
             vscode.postMessage({ command: 'toggleTerminal' });
+        }
+
+        function requestNuclear() {
+            vscode.postMessage({ command: 'nuclearReset' });
         }
 
         function sendSnippet(id, run) {
