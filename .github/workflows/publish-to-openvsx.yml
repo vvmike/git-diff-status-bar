@@ -1,3 +1,7 @@
+# Reminder:
+# npm version patch
+# git push --follow-tags
+
 name: Publish to Open VSX
 
 on:
